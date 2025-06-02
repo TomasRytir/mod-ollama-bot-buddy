@@ -5,8 +5,8 @@
 # AzerothCore + Playerbots Module: mod-ollama-bot-buddy
 
 > [!CAUTION]
-> NOT FOR GENERAL USE YET
-> This module is experimental and may cause significant CPU load on your server due to LLM-driven bot automation. Use with caution.
+> NOT FOR GENERAL USE YET -
+> This module is experimental and may not work, break your server or cause significant CPU load on your server due to LLM-driven bot automation. Use with caution.
 
 ## Overview
 
@@ -41,7 +41,7 @@
 > Dependencies are verified on macOS Monterey 12.7.6 and Ubuntu 22.04 LTS. Please open an issue with your OS and steps if you hit any compatibility issues.
 
 1. **Prerequisites:**
-   - A working AzerothCore (https://github.com/azerothcore/azerothcore-wotlk) with the Player Bots module (https://github.com/azerothcore/mod-playerbots).
+   - A working AzerothCore (https://github.com/liyunfan1223/azerothcore-wotlk/tree/Playerbot) with the Player Bots module (https://github.com/liyunfan1223/mod-playerbots).
    - Requires:
      - cURL (https://curl.se/libcurl/)
      - fmtlib (https://github.com/fmtlib/fmt)

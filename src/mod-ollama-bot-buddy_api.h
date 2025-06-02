@@ -38,4 +38,5 @@ namespace BotBuddyAI
     bool AcceptQuest(Player* bot, uint32 questId);
     bool TurnInQuest(Player* bot, uint32 questId);
     bool LootNearby(Player* bot);
+    bool Interact(Player* bot, ObjectGuid guid);
 }
