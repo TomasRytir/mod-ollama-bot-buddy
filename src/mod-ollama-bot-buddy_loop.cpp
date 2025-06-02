@@ -19,6 +19,79 @@
 #include "TravelNode.h"
 #include <atomic>
 #include <unordered_map>
+#include <iomanip>
+#include "GameObjectData.h"
+#include "GameObject.h"
+
+std::vector<std::string> GetGroupStatus(Player* bot)
+{
+    std::vector<std::string> info;
+    if (!bot || !bot->GetGroup()) return info;
+
+    Group* group = bot->GetGroup();
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->GetMap()) continue;
+
+        if(bot == member)
+        {
+            continue; // Skip the bot itself
+        }
+
+        float dist = bot->GetDistance(member);
+        std::string beingAttacked = "";
+
+        if (Unit* attacker = member->GetVictim())
+        {
+            beingAttacked = fmt::format(
+                " [Under Attack by {} (guid: {}, Level: {}, HP: {}/{})]",
+                attacker->GetName(),
+                attacker->GetGUID().GetCounter(),
+                attacker->GetLevel(),
+                attacker->GetHealth(),
+                attacker->GetMaxHealth()
+            );
+        }
+
+        info.push_back(fmt::format(
+            "{} (guid: {}, Level: {}, HP: {}/{}, Pos: {} {} {}, Dist: {:.1f}){}",
+            member->GetName(),
+            member->GetGUID().GetCounter(),
+            member->GetLevel(),
+            member->GetHealth(),
+            member->GetMaxHealth(),
+            member->GetPositionX(),
+            member->GetPositionY(),
+            member->GetPositionZ(),
+            dist,
+            beingAttacked
+        ));
+    }
+    return info;
+}
+
+static std::string GetProfessionTagFromChest(uint32 entry)
+{
+    switch (entry)
+    {
+        case 1617: return " [Herbalism: Peacebloom]";
+        case 1618: return " [Herbalism: Silverleaf]";
+        case 1620: return " [Herbalism: Briarthorn]";
+        case 1621: return " [Herbalism: Bruiseweed]";
+        case 1731: return " [Mining: Copper Vein]";
+        case 1732: return " [Mining: Tin Vein]";
+        case 1733: return " [Mining: Silver Vein]";
+        case 1735: return " [Mining: Iron Deposit]";
+        case 2040: return " [Mining: Mithril Deposit]";
+        case 2047: return " [Mining: Truesilver Deposit]";
+        case 324:  return " [Mining: Small Thorium Vein]";
+        case 175404: return " [Alchemy Lab]";
+        default: return "";
+    }
+}
+
+
 
 // Gather visible objects (creatures/gameobjects) around the bot with LOS check
 std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
@@ -37,7 +110,26 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         if (c->IsPet() || c->IsTotem()) continue;
 
         std::string type;
-        if (c->IsHostileTo(bot)) type = "ENEMY";
+        if (c->isDead())
+        {
+            type = "DEAD";
+            if (c->hasLootRecipient() && (c->GetLootRecipient() == bot || (c->GetLootRecipientGroup() && bot->GetGroup() == c->GetLootRecipientGroup())))
+            {
+                type = "DEAD (LOOTABLE)";
+            }
+            else
+            {
+                continue;
+            }
+            if(!c->hasLootRecipient())
+            {
+                if (c->GetCreatureTemplate() && c->GetCreatureTemplate()->SkinLootId)
+                {
+                    type += " [SKINNABLE]";
+                }
+            }
+        }
+        else if (c->IsHostileTo(bot)) type = "ENEMY";
         else if (c->IsFriendlyTo(bot)) type = "FRIENDLY";
         else type = "NEUTRAL";
 
@@ -48,7 +140,7 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
 
         float dist = bot->GetDistance(c);
         visible.push_back(fmt::format(
-            "{}: {}{} (guid: {}, level: {}, hp: {}/{}, position: {} {} {}, distance: {:.1f})",
+            "{}: {}{} (guid: {}, Level: {}, HP: {}/{}, Position: {} {} {}, Distance: {:.1f})",
             type,
             c->GetName(),
             questGiver,
@@ -63,17 +155,30 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         ));
     }
 
-    // GameObject logic (as in your current function)
     for (auto const& pair : map->GetGameObjectBySpawnIdStore())
     {
         GameObject* go = pair.second;
         if (!go) continue;
         if (!bot->IsWithinDistInMap(go, radius)) continue;
         if (!bot->IsWithinLOS(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ())) continue;
+
+        std::string tag = "";
+
+        if (GameObjectTemplate const* tmpl = go->GetGOInfo())
+        {
+            if (tmpl->type == GAMEOBJECT_TYPE_CHEST)
+            {
+                std::string chestTag = GetProfessionTagFromChest(tmpl->entry);
+                if (!chestTag.empty())
+                    tag = chestTag;
+            }
+        }
+        
         float dist = bot->GetDistance(go);
         visible.push_back(fmt::format(
-            "{} (guid: {}, type: {}, position: {} {} {}, distance: {:.1f})",
+            "{}{} (guid: {}, Type: {}, Position: {} {} {}, Distance: {:.1f})",
             go->GetName(),
+            tag,
             go->GetGUID().GetCounter(),
             go->GetGoType(),
             go->GetPositionX(),
@@ -86,7 +191,6 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
     return visible;
 }
 
-
 std::string GetCombatSummary(Player* bot)
 {
     std::ostringstream oss;
@@ -97,7 +201,6 @@ std::string GetCombatSummary(Player* bot)
     Unit* attacker = nullptr;
     if (inCombat && !victim)
     {
-        // Scan all units in range to see who is targeting the bot as their victim
         Map* map = bot->GetMap();
         if (map)
         {
@@ -114,15 +217,21 @@ std::string GetCombatSummary(Player* bot)
         }
     }
 
+    auto safe_name = [](Unit* unit) -> std::string { return unit ? unit->GetName() : "?"; };
+    auto safe_guid = [](Unit* unit) -> std::string { return unit ? std::to_string(unit->GetGUID().GetCounter()) : "?"; };
+    auto safe_level = [](Unit* unit) -> std::string { return unit ? std::to_string(unit->GetLevel()) : "?"; };
+    auto safe_hp = [](Unit* unit) -> std::string { return unit ? std::to_string(unit->GetHealth()) : "?"; };
+    auto safe_maxhp = [](Unit* unit) -> std::string { return unit ? std::to_string(unit->GetMaxHealth()) : "?"; };
+
     if (inCombat)
     {
         oss << "IN COMBAT: ";
         if (victim)
         {
-            oss << "Target: " << victim->GetName()
-                << " (guid: " << victim->GetGUID().GetCounter() << ")"
-                << ", level: " << victim->GetLevel()
-                << ", hp: " << victim->GetHealth() << "/" << victim->GetMaxHealth();
+            oss << "Target: " << safe_name(victim)
+                << " (guid: " << safe_guid(victim) << ")"
+                << ", Level: " << safe_level(victim)
+                << ", HP: " << safe_hp(victim) << "/" << safe_maxhp(victim);
         }
         else
         {
@@ -130,29 +239,82 @@ std::string GetCombatSummary(Player* bot)
         }
         oss << ". ";
 
-        // Show who is attacking the bot, if anyone
         if (attacker)
         {
-            oss << "Under attack by: " << attacker->GetName()
-                << " (guid: " << attacker->GetGUID().GetCounter() << ")"
-                << ", level: " << attacker->GetLevel()
-                << ", hp: " << attacker->GetHealth() << "/" << attacker->GetMaxHealth()
-                << ". ";
+            float dist = bot && attacker ? bot->GetDistance(attacker) : -1.0f;
+
+            Creature* c = dynamic_cast<Creature*>(attacker);
+            Player* p = dynamic_cast<Player*>(attacker);
+
+            oss << "DEFEND YOURSELF, YOU ARE UNDER ATTACK BY: ";
+            if (c)
+            {
+                // Creature-specific info
+                oss << "Creature '" << safe_name(c)
+                    << "' (guid: " << safe_guid(c) << ")"
+                    << ", Level: " << safe_level(c)
+                    << ", HP: " << safe_hp(c) << "/" << safe_maxhp(c)
+                    << ", Distance: " << (dist >= 0 ? (std::ostringstream() << std::fixed << std::setprecision(1) << dist).str() : "?")
+                    << ", Elite: " << (c->isElite() ? "Yes" : "No");
+
+                // Show auras/buffs/debuffs
+                oss << ", Auras:";
+                bool anyAura = false;
+                for (auto& auraPair : c->GetOwnedAuras())
+                {
+                    if (!anyAura) anyAura = true;
+                    oss << " " << auraPair.second->GetSpellInfo()->SpellName[0];
+                }
+                if (!anyAura) oss << " None";
+            }
+            else if (p)
+            {
+                // Player-specific info
+                std::string pFaction = (p->GetTeamId() == TEAM_ALLIANCE ? "Alliance" : "Horde");
+                oss << "Player '" << safe_name(p)
+                    << "' (guid: " << safe_guid(p) << ")"
+                    << ", Level: " << safe_level(p)
+                    << ", HP: " << safe_hp(p) << "/" << safe_maxhp(p)
+                    << ", Distance: " << (dist >= 0 ? (std::ostringstream() << std::fixed << std::setprecision(1) << dist).str() : "?")
+                    << ", Faction: " << pFaction
+                    << ", Class: " << std::to_string(p->getClass())
+                    << ", Race: " << std::to_string(p->getRace());
+
+                // Show auras/buffs/debuffs
+                oss << ", Auras:";
+                bool anyAura = false;
+                for (auto& auraPair : p->GetOwnedAuras())
+                {
+                    if (!anyAura) anyAura = true;
+                    oss << " " << auraPair.second->GetSpellInfo()->SpellName[0];
+                }
+                if (!anyAura) oss << " None";
+            }
+            else
+            {
+                // Unknown Unit type
+                oss << safe_name(attacker)
+                    << " (guid: " << safe_guid(attacker) << ")"
+                    << ", Level: " << safe_level(attacker)
+                    << ", HP: " << safe_hp(attacker) << "/" << safe_maxhp(attacker)
+                    << ", Distance: " << (dist >= 0 ? (std::ostringstream() << std::fixed << std::setprecision(1) << dist).str() : "?");
+            }
+
+            oss << ". ";
         }
 
-        oss << "Bot HP: " << bot->GetHealth() << "/" << bot->GetMaxHealth();
-        oss << ", Mana: " << bot->GetPower(POWER_MANA) << "/" << bot->GetMaxPower(POWER_MANA);
-        oss << ", Energy: " << bot->GetPower(POWER_ENERGY) << "/" << bot->GetMaxPower(POWER_ENERGY);
+        oss << "Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
+        oss << ", Mana: " << (bot ? std::to_string(bot->GetPower(POWER_MANA)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_MANA)) : "?");
+        oss << ", Energy: " << (bot ? std::to_string(bot->GetPower(POWER_ENERGY)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_ENERGY)) : "?");
     }
     else
     {
-        oss << "NOT IN COMBAT. HP: " << bot->GetHealth() << "/" << bot->GetMaxHealth();
-        oss << ", Mana: " << bot->GetPower(POWER_MANA) << "/" << bot->GetMaxPower(POWER_MANA);
-        oss << ", Energy: " << bot->GetPower(POWER_ENERGY) << "/" << bot->GetMaxPower(POWER_ENERGY);
+        oss << "NOT IN COMBAT. Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
+        oss << ", Mana: " << (bot ? std::to_string(bot->GetPower(POWER_MANA)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_MANA)) : "?");
+        oss << ", Energy: " << (bot ? std::to_string(bot->GetPower(POWER_ENERGY)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_ENERGY)) : "?");
     }
     return oss.str();
 }
-
 
 
 std::vector<std::string> GetNearbyWaypoints(Player* bot, float radius = 200.0f)
@@ -255,6 +417,8 @@ static std::string BuildBotPrompt(Player* bot)
     AreaTableEntry const* botCurrentArea = botAI->GetCurrentArea();
     AreaTableEntry const* botCurrentZone = botAI->GetCurrentZone();
 
+    std::vector<std::string> groupInfo = GetGroupStatus(bot);
+
     std::string botName             = bot->GetName();
     uint32_t botLevel               = bot->GetLevel();
     uint8_t botGenderByte           = bot->getGender();
@@ -267,6 +431,7 @@ static std::string BuildBotPrompt(Player* bot)
     std::string botFaction          = (bot->GetTeamId() == TEAM_ALLIANCE ? "Alliance" : "Horde");
     std::string botGroupStatus      = (bot->GetGroup() ? "In a group" : "Solo");
     uint32_t botGold                = bot->GetMoney() / 10000;
+    
 
     std::ostringstream oss;
     oss << "Bot state summary:\n";
@@ -276,13 +441,19 @@ static std::string BuildBotPrompt(Player* bot)
     oss << "Race: " << botRace << "\n";
     oss << "Gender: " << botGender << "\n";
     oss << "Faction: " << botFaction << "\n";
-    oss << "Group status: " << botGroupStatus << "\n";
     oss << "Gold: " << botGold << "\n";
     oss << "Area: " << botAreaName << "\n";
     oss << "Zone: " << botZoneName << "\n";
     oss << "Map: " << botMapName << "\n";
     oss << "Position: " << bot->GetPositionX() << " " << bot->GetPositionY() << " " << bot->GetPositionZ() << "\n";
+
     oss << GetCombatSummary(bot) << "\n\n";
+
+    oss << "Group status: " << botGroupStatus << "\n";
+    if (!groupInfo.empty()) {
+        oss << "Group members:\n";
+        for (const auto& entry : groupInfo) oss << " - " << entry << "\n";
+    }
 
     oss << "Active quests:\n";
     for (auto const& qs : bot->getQuestStatusMap())
@@ -294,7 +465,7 @@ static std::string BuildBotPrompt(Player* bot)
     std::vector<std::string> wps = GetNearbyWaypoints(bot);
 
     if (!losLocs.empty()) {
-        oss << "Visible locations in line of sight:\n";
+        oss << "Visible locations/objects in line of sight:\n";
         for (const auto& entry : losLocs) oss << " - " << entry << "\n";
     }
     if (!wps.empty()) {
@@ -302,37 +473,59 @@ static std::string BuildBotPrompt(Player* bot)
         for (const auto& entry : wps) oss << " - " << entry << "\n";
     }
     if (!losLocs.empty() || !wps.empty()) {
-        oss << "You must select one of these locations or waypoints to move to, or choose a new unexplored spot.\n";
+        oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
     }
-
-    oss << "Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing, and efficient progression. If no quests or grind targets are present, explore for new quests, run dungeons or raids, or improve professions and gold.\n";
-    oss << "If you are being attacked, always prioritize defending yourself or escaping immediate danger, using the most effective available action.\n";
-    oss << "When selecting a target to attack, always move to the target if it is not in immediate range, and only attack after you are close enough to do so.\n";
-    oss << "Select the single most effective action to increase level, complete quests, or obtain gear. Only reply with ONE command, strictly following these formats:\n";
-    oss << " - move to <x> <y> <z>\n";
-    oss << " - attack <guid>\n";
-    oss << " - interact <guid>\n";
-    oss << " - loot\n";
-    oss << " - say <message>\n";
-    oss << " - acceptquest <id>\n";
-    oss << " - turninquest <id>\n";
-    oss << " - stop\n";
-    oss << "\n";
-    oss << "You may only use commands that match the GUIDs, waypoints, or options listed in the visible objects and navigation section. Never invent GUIDs or coordinates. For example, to attack a creature with 'guid: 2241', use: attack 2241. To interact with a game object with 'guid: 1772', use: interact 1772.\n";
-    oss << "\n";
-    oss << "If no valid creatures, objects, or quests are visible, choose a waypoint or unexplored coordinates from the list and use move to <x> <y> <z>.\n";
-    oss << "\n";
-    oss << "When pursuing any action, prefer targets and objectives that are closest to you and most directly advance the main goal: combat, questing, interaction, or movement toward progress. Move to distant targets before engaging if required. Ignore distractions. Do not idle or repeat commands. Do not choose actions with no available targets.\n";
-    oss << "\n";
-    oss << "Using the say <message> command to talk to real humans sometimes and let them know what you're doing, your current goals and progress helps advance your main goal as well.\n";
-    oss << "\n";
-    oss << "IMPORTANT: Your response must be a single command ONLY. Do not return explanations, summaries, or extra text.\n";
-
 
     if (g_EnableOllamaBotBuddyDebug)
     {
-        //LOG_INFO("server.loading", "[OllamaBotBuddy] Bot prompt for '{}': {}", botName, oss.str());
+        LOG_INFO("server.loading", "[OllamaBotBuddy] Bot Snapshot for '{}': {}", botName, oss.str());
     }
+
+    oss << "You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:\n";
+    oss << "Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing, and efficient progression. If no quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.\n";
+    oss << "\n";
+    oss << "COMBAT RULES:\n";
+    oss << "- If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.\n";
+    oss << "- During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.\n";
+    oss << "- When choosing a target, move toward them if not in range. Use 'attack' only once you're within melee or casting distance (distance < 2).\n";
+    oss << "- If you're too close to your target (distance <= 0.15) then move away before attacking again.\n";
+    oss << "\n";
+    oss << "DECISION RULE:\n";
+    oss << "- Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.\n";
+    oss << "- Only use ONE of the following commands:\n";
+    oss << "   move to <x> <y> <z>\n";
+    oss << "   attack <guid>\n";
+    oss << "   interact <guid>\n";
+    oss << "   loot\n";
+    oss << "   say <message>\n";
+    oss << "   acceptquest <id>\n";
+    oss << "   turninquest <id>\n";
+    oss << "   stop\n";
+    oss << "- ANY other format or additional text reply is INVALID.\n";
+    oss << "\n";
+    oss << "NAVIGATION:\n";
+    oss << "- Use ONLY GUIDs or coordinates listed in visible objects or navigation options.\n";
+    oss << "- NEVER make up IDs, GUIDs, or coordinates.\n";
+    oss << "- If nothing useful is visible, choose a waypoint or unexplored coordinate and move there.\n";
+    oss << "\n";
+    oss << "COMMUNICATION:\n";
+    oss << "- Use 'say <message>' to announce goals, movement, or status when moving, finishing quests, entering combat, idling, or seeing nearby real players.\n";
+    oss << "\n";
+    oss << "IMPORTANT FORMATTING RULE:\n";
+    oss << "- Respond with EXACTLY ONE command. No summaries. No commentary. No dialogue. No bullet points.\n";
+    oss << "- NEVER EVER REPLY WITH ANYTHING THAT IS NOT A SINGLE COMMAND FROM THE ABOVE LIST.\n";
+    oss << "\n";
+    oss << "Correct examples:\n";
+    oss << "   attack 2241\n";
+    oss << "   move to -9347.02 256.48 65.10\n";
+    oss << "   say Moving to explore new quest area\n";
+    oss << "\n";
+    oss << "Incorrect examples (DO NOT DO THIS):\n";
+    oss << "   I will attack the enemy now\n";
+    oss << "   Let's go! move to -9347.02 256.48 65.10\n";
+    oss << "   Command: attack 2241\n";
+
+
     return oss.str();
 }
 
@@ -378,7 +571,7 @@ void OllamaBotControlLoop::OnUpdate(uint32 diff)
 
             if (g_EnableOllamaBotBuddyDebug)
             {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Sending prompt for bot '{}': {}", botName, prompt);
+                //LOG_INFO("server.loading", "[OllamaBotBuddy] Sending prompt for bot '{}': {}", botName, prompt);
             }
 
             std::thread([bot, guid, prompt]() {

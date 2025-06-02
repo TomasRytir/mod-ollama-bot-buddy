@@ -3,137 +3,76 @@
 #include "Playerbots.h"
 #include "PlayerbotAI.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Chat.h"
 #include "Log.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "Cell.h"
+#include "Map.h"
 #include <sstream>
+#
 
 namespace BotBuddyAI
 {
     bool MoveTo(Player* bot, float x, float y, float z)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' moving to ({}, {}, {})", bot->GetName(), x, y, z);
-        }
+        bot->GetMotionMaster()->Clear();
         bot->GetMotionMaster()->MovePoint(0, x, y, z);
         return true;
     }
 
     bool Attack(Player* bot, ObjectGuid guid)
     {
-        if (!bot || !guid)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot or GUID invalid for attack.");
-            return false;
-        }
+        if (!bot || !guid) return false;
 
-        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
-        if (!ai)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] No PlayerbotAI for '{}'", bot->GetName());
-            return false;
-        }
+        Unit* target = ObjectAccessor::GetUnit(*bot, guid);
+        if (!target || !bot->IsHostileTo(target) || !bot->IsWithinLOSInMap(target)) return false;
 
-        // Find valid target (Creature or Player)
-        Unit* target = nullptr;
-
-        if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
-        {
-            target = creature;
-        }
-        else if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))
-        {
-            target = player;
-        }
-
-        if (!target)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Target with GUID {} not found or not attackable.", guid.GetCounter());
-            return false;
-        }
-
-        if (!bot->IsHostileTo(target) || !bot->IsWithinLOSInMap(target))
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Target with GUID {} not attackable.", guid.GetCounter());
-            return false;
-        }
-
-        // Reset AI (clear queued actions and strategies)
-        ai->Reset();
-
-        // Select the target
         bot->SetSelection(target->GetGUID());
+        bot->SetFacingToObject(target);
+        bot->Attack(target, true);
+        bot->GetMotionMaster()->Clear();
+        bot->GetMotionMaster()->MoveChase(target);
 
-        // PlayerbotAI: force the attack action
-        bool result = ai->DoSpecificAction("attack", Event(), false, std::to_string(target->GetGUID().GetRawValue()));
-
-        LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' attacking GUID {} result={}", bot->GetName(), guid.GetCounter(), result);
-
-        return result;
+        return true;
     }
-
 
     bool Interact(Player* bot, ObjectGuid guid)
     {
-        if (!bot || !guid)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot or GUID invalid for interact.");
-            return false;
-        }
+        if (!bot || !guid) return false;
 
-        // Try Creature first
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
-            if (g_EnableOllamaBotBuddyDebug)
-            {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' interacting with creature '{}'", bot->GetName(), creature->GetName());
-            }
-            // Try gossip (questgiver, vendor, etc.)
+            bot->SetFacingToObject(creature);
             creature->AI()->sGossipHello(bot);
-            // perform additional interaction steps (quest/loot/vendor/etc.)
             return true;
         }
-        // Try GameObject
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
         {
-            if (g_EnableOllamaBotBuddyDebug)
-            {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' interacting with gameobject '{}'", bot->GetName(), go->GetName());
-            }
-            // Try using/opening/interacting with the game object
+            bot->SetFacingToObject(go);
             go->Use(bot);
             return true;
         }
-        else
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Interact: No creature or gameobject found with GUID {}", guid.GetCounter());
-            return false;
-        }
+        return false;
     }
 
     bool CastSpell(Player* bot, uint32 spellId, Unit* target)
     {
         if (!bot) return false;
-        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
-        if (!ai) return false;
         if (!target) target = bot->GetVictim();
         if (!target) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' casting spell {} on target '{}'", bot->GetName(), spellId, target->GetName());
-        }
-        ai->CastSpell(spellId, target);
+
+        bot->SetFacingToObject(target);
+        bot->CastSpell(target, spellId, false);
         return true;
     }
 
     bool Say(Player* bot, const std::string& msg)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' says: {}", bot->GetName(), msg);
-        }
         bot->Say(msg, LANG_UNIVERSAL);
         return true;
     }
@@ -141,69 +80,66 @@ namespace BotBuddyAI
     bool FollowMaster(Player* bot)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' following master.", bot->GetName());
-        }
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
-        ai->TellMasterNoFacing("follow");
+        Player* master = ai->GetMaster();
+        if (!master) return false;
+
+        bot->GetMotionMaster()->Clear();
+        bot->GetMotionMaster()->MoveFollow(master, 1.0f, 0.0f);
         return true;
     }
 
     bool StopMoving(Player* bot)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' stopping movement.", bot->GetName());
-        }
         bot->StopMoving();
+        bot->GetMotionMaster()->Clear();
         return true;
     }
 
     bool AcceptQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' accepting quest {}", bot->GetName(), questId);
-        }
-        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
-        if (!ai) return false;
-        std::stringstream ss;
-        ss << "accept quest " << questId;
-        ai->TellMasterNoFacing(ss.str());
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) return false;
+        bot->AddQuest(quest, nullptr);
         return true;
     }
 
     bool TurnInQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' turning in quest {}", bot->GetName(), questId);
-        }
-        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
-        if (!ai) return false;
-        std::stringstream ss;
-        ss << "turnin quest " << questId;
-        ai->TellMasterNoFacing(ss.str());
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) return false;
+        bot->CompleteQuest(questId);
+        bot->RewardQuest(quest, 0, bot);
         return true;
     }
 
     bool LootNearby(Player* bot)
     {
         if (!bot) return false;
-        if (g_EnableOllamaBotBuddyDebug)
+
+        Map* map = bot->GetMap();
+        if (!map) return false;
+
+        for (const auto& pair : map->GetCreatureBySpawnIdStore())
         {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot '{}' looting nearby.", bot->GetName());
+            Creature* creature = pair.second;
+            if (!creature || !creature->isDead()) continue;
+
+            if (!bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE)) continue;
+
+            bot->SetFacingToObject(creature);
+            bot->PrepareGossipMenu(creature, creature->GetCreatureTemplate()->GossipMenuId);
+            bot->SendLoot(creature->GetGUID(), LOOT_CORPSE);
+            return true;
         }
-        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
-        if (!ai) return false;
-        ai->TellMasterNoFacing("loot");
-        return true;
+
+        return false;
     }
+
 } // namespace BotBuddyAI
 
 bool HandleBotControlCommand(Player* bot, const BotControlCommand& command)
@@ -211,6 +147,7 @@ bool HandleBotControlCommand(Player* bot, const BotControlCommand& command)
     if (g_EnableOllamaBotBuddyDebug && bot)
     {
         LOG_INFO("server.loading", "[OllamaBotBuddy] HandleBotControlCommand for '{}', type {}", bot->GetName(), int(command.type));
+        LOG_INFO("server.loading", "[OllamaBotBuddy] ================================================================================================");
     }
     if (!bot) return false;
     switch (command.type)
