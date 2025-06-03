@@ -26,6 +26,9 @@ struct BotControlCommand
 bool HandleBotControlCommand(Player* bot, const BotControlCommand& command);
 bool ParseBotControlCommand(Player* bot, const std::string& commandStr);
 
+std::string FormatCommandString(const BotControlCommand& command);
+
+
 // BotBuddyAI namespace with wrappers for bot actions
 namespace BotBuddyAI
 {

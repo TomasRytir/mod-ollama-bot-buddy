@@ -22,6 +22,14 @@
 #include <iomanip>
 #include "GameObjectData.h"
 #include "GameObject.h"
+#include <deque>
+#include <mutex>
+#include "SpellMgr.h"
+#include "SpellInfo.h"
+#include "SharedDefines.h"
+
+static std::unordered_map<uint64_t, std::deque<std::string>> botCommandHistory;
+static std::mutex botCommandHistoryMutex;
 
 std::vector<std::string> GetGroupStatus(Player* bot)
 {
@@ -71,27 +79,153 @@ std::vector<std::string> GetGroupStatus(Player* bot)
     return info;
 }
 
+std::string GetBotSpellInfo(Player* bot)
+{
+    std::ostringstream spellSummary;
+
+    for (const auto& spellPair : bot->GetSpellMap())
+    {
+        uint32 spellId = spellPair.first;
+        const SpellInfo* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || spellInfo->Attributes & SPELL_ATTR0_PASSIVE)
+            continue;
+
+        if (spellInfo->SpellFamilyName == SPELLFAMILY_GENERIC)
+            continue;
+
+        if (bot->HasSpellCooldown(spellId))
+            continue;
+
+        std::string effectText;
+        for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (!spellInfo->Effects[i].IsEffect())
+                continue;
+
+            switch (spellInfo->Effects[i].Effect)
+            {
+                case SPELL_EFFECT_SCHOOL_DAMAGE: effectText = "Deals damage"; break;
+                case SPELL_EFFECT_HEAL: effectText = "Heals the target"; break;
+                case SPELL_EFFECT_APPLY_AURA: effectText = "Applies an aura"; break;
+                case SPELL_EFFECT_DISPEL: effectText = "Dispels magic"; break;
+                case SPELL_EFFECT_THREAT: effectText = "Generates threat"; break;
+                default: continue;
+            }
+            break;
+        }
+
+        if (effectText.empty())
+            continue;
+
+        const char* name = spellInfo->SpellName[0];
+        if (!name || !*name)
+            continue;
+
+        std::string costText;
+        if (spellInfo->ManaCost || spellInfo->ManaCostPercentage)
+        {
+            switch (spellInfo->PowerType)
+            {
+                case POWER_MANA: costText = std::to_string(spellInfo->ManaCost) + " mana"; break;
+                case POWER_RAGE: costText = std::to_string(spellInfo->ManaCost) + " rage"; break;
+                case POWER_FOCUS: costText = std::to_string(spellInfo->ManaCost) + " focus"; break;
+                case POWER_ENERGY: costText = std::to_string(spellInfo->ManaCost) + " energy"; break;
+                case POWER_RUNIC_POWER: costText = std::to_string(spellInfo->ManaCost) + " runic power"; break;
+                default: costText = std::to_string(spellInfo->ManaCost) + " unknown resource"; break;
+            }
+        }
+        else
+        {
+            costText = "no cost";
+        }
+        
+        spellSummary << "**" << name << "** (ID: " << spellId << ") - " << effectText << ", Costs " << costText << ".\n";
+
+    }
+
+    return spellSummary.str();
+}
+
+std::vector<std::string> GetVisiblePlayers(Player* bot, float radius = 100.0f)
+{
+    std::vector<std::string> players;
+    if (!bot || !bot->GetMap()) return players;
+
+    for (auto const& pair : ObjectAccessor::GetPlayers())
+    {
+        Player* player = pair.second;
+        if (!player || player == bot) continue;
+        if (!player->IsInWorld() || player->IsGameMaster()) continue;
+        if (player->GetMap() != bot->GetMap()) continue;
+        if (!bot->IsWithinDistInMap(player, radius)) continue;
+        if (!bot->IsWithinLOS(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ())) continue;
+
+        float dist = bot->GetDistance(player);
+        std::string faction = (player->GetTeamId() == TEAM_ALLIANCE ? "Alliance" : "Horde");
+
+        players.push_back(fmt::format(
+            "Player: {} (guid: {}, Level: {}, Class: {}, Race: {}, Faction: {}, Position: {:.1f} {:.1f} {:.1f}, Distance: {:.1f})",
+            player->GetName(),
+            player->GetGUID().GetCounter(),
+            player->GetLevel(),
+            std::to_string(player->getClass()),
+            std::to_string(player->getRace()),
+            faction,
+            player->GetPositionX(),
+            player->GetPositionY(),
+            player->GetPositionZ(),
+            dist
+        ));
+    }
+
+    return players;
+}
+
+
 static std::string GetProfessionTagFromChest(uint32 entry)
 {
     switch (entry)
     {
-        case 1617: return " [Herbalism: Peacebloom]";
-        case 1618: return " [Herbalism: Silverleaf]";
-        case 1620: return " [Herbalism: Briarthorn]";
-        case 1621: return " [Herbalism: Bruiseweed]";
-        case 1731: return " [Mining: Copper Vein]";
-        case 1732: return " [Mining: Tin Vein]";
-        case 1733: return " [Mining: Silver Vein]";
-        case 1735: return " [Mining: Iron Deposit]";
-        case 2040: return " [Mining: Mithril Deposit]";
-        case 2047: return " [Mining: Truesilver Deposit]";
-        case 324:  return " [Mining: Small Thorium Vein]";
+        case 1617: return " [Herbalism]";
+        case 1618: return " [Herbalism]";
+        case 1620: return " [Herbalism]";
+        case 1621: return " [Herbalism]";
+        case 1731: return " [Mining]";
+        case 1732: return " [Mining]";
+        case 1733: return " [Mining]";
+        case 1735: return " [Mining]";
+        case 2040: return " [Mining]";
+        case 2047: return " [Mining]";
+        case 324:  return " [Mining]";
         case 175404: return " [Alchemy Lab]";
         default: return "";
     }
 }
 
+void AddBotCommandHistory(Player* bot, const std::string& command)
+{
+    if (!bot || command.empty()) return;
 
+    BotControlCommand parsedCommand;
+
+    std::lock_guard<std::mutex> lock(botCommandHistoryMutex);
+    uint64_t guid = bot->GetGUID().GetRawValue();
+    auto& dq = botCommandHistory[guid];
+    dq.push_back(command);
+    if (dq.size() > 5) dq.pop_front();
+}
+
+
+std::vector<std::string> GetBotCommandHistory(Player* bot)
+{
+    std::vector<std::string> out;
+    if (!bot) return out;
+    std::lock_guard<std::mutex> lock(botCommandHistoryMutex);
+    uint64_t guid = bot->GetGUID().GetRawValue();
+    if (botCommandHistory.count(guid))
+        out.assign(botCommandHistory[guid].begin(), botCommandHistory[guid].end());
+    return out;
+}
 
 // Gather visible objects (creatures/gameobjects) around the bot with LOS check
 std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
@@ -449,6 +583,8 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << GetCombatSummary(bot) << "\n\n";
 
+    oss << "Your known spells:\n" << GetBotSpellInfo(bot) << "\n\n";
+
     oss << "Group status: " << botGroupStatus << "\n";
     if (!groupInfo.empty()) {
         oss << "Group members:\n";
@@ -468,12 +604,31 @@ static std::string BuildBotPrompt(Player* bot)
         oss << "Visible locations/objects in line of sight:\n";
         for (const auto& entry : losLocs) oss << " - " << entry << "\n";
     }
+
     if (!wps.empty()) {
         oss << "Nearby navigation waypoints:\n";
         for (const auto& entry : wps) oss << " - " << entry << "\n";
     }
+
+    std::vector<std::string> nearbyPlayers = GetVisiblePlayers(bot);
+    if (!nearbyPlayers.empty()) {
+        oss << "Visible players in area:\n";
+        for (const auto& entry : nearbyPlayers) oss << " - " << entry << "\n";
+    }
+
     if (!losLocs.empty() || !wps.empty()) {
         oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
+    }
+
+    std::vector<std::string> cmdHist = GetBotCommandHistory(bot);
+
+    if (!cmdHist.empty())
+    {
+        oss << "Last 5 commands you sent with the most recent at the bottom:\n";
+        for (const auto& cmd : cmdHist)
+        {
+            oss << " - " << cmd << "\n";
+        }
     }
 
     if (g_EnableOllamaBotBuddyDebug)
@@ -482,7 +637,7 @@ static std::string BuildBotPrompt(Player* bot)
     }
 
     oss << "You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:\n";
-    oss << "Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing, and efficient progression. If no quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.\n";
+    oss << "Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers, talking to other players and efficient progression. If no quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.\n";
     oss << "\n";
     oss << "COMBAT RULES:\n";
     oss << "- If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.\n";
@@ -495,6 +650,7 @@ static std::string BuildBotPrompt(Player* bot)
     oss << "- Only use ONE of the following commands:\n";
     oss << "   move to <x> <y> <z>\n";
     oss << "   attack <guid>\n";
+    oss << "   spell <spellid> <guid>\n";
     oss << "   interact <guid>\n";
     oss << "   loot\n";
     oss << "   say <message>\n";
@@ -519,6 +675,9 @@ static std::string BuildBotPrompt(Player* bot)
     oss << "   attack 2241\n";
     oss << "   move to -9347.02 256.48 65.10\n";
     oss << "   say Moving to explore new quest area\n";
+    oss << "   loot\n";
+    oss << "   interact 2343\n";
+    oss << "   spell 2098 2241\n";
     oss << "\n";
     oss << "Incorrect examples (DO NOT DO THIS):\n";
     oss << "   I will attack the enemy now\n";
@@ -548,7 +707,7 @@ void OllamaBotControlLoop::OnUpdate(uint32 diff)
         Player* bot = itr.second;
         if (!bot->IsInWorld()) continue;
         std::string botName = bot->GetName();
-        if (botName != "OllamaTest") continue;
+        if (botName != "Ollamatest") continue;
 
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (ai)

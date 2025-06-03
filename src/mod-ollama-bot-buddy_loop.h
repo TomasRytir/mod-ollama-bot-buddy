@@ -7,3 +7,5 @@ public:
     OllamaBotControlLoop();
     void OnUpdate(uint32 diff) override;
 };
+
+void AddBotCommandHistory(Player* bot, const std::string& command);

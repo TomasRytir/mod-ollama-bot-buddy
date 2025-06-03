@@ -1,5 +1,6 @@
 #include "mod-ollama-bot-buddy_api.h"
 #include "mod-ollama-bot-buddy_config.h"
+#include "mod-ollama-bot-buddy_loop.h"
 #include "Playerbots.h"
 #include "PlayerbotAI.h"
 #include "ObjectAccessor.h"
@@ -12,7 +13,6 @@
 #include "Cell.h"
 #include "Map.h"
 #include <sstream>
-#
 
 namespace BotBuddyAI
 {
@@ -93,7 +93,6 @@ namespace BotBuddyAI
     bool StopMoving(Player* bot)
     {
         if (!bot) return false;
-        bot->StopMoving();
         bot->GetMotionMaster()->Clear();
         return true;
     }
@@ -246,7 +245,33 @@ bool HandleBotControlCommand(Player* bot, const BotControlCommand& command)
             if (!command.args.empty())
             {
                 uint32 spellId = std::stoi(command.args[0]);
-                return BotBuddyAI::CastSpell(bot, spellId);
+                Unit* target = nullptr;
+                if (command.args.size() > 1)
+                {
+                    uint32 lowGuid = std::stoul(command.args[1]);
+                    // Try to find creature by lowGuid
+                    for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+                    {
+                        Creature* c = pair.second;
+                        if (c && c->GetGUID().GetCounter() == lowGuid)
+                        {
+                            target = c;
+                            break;
+                        }
+                    }
+                    // Try to find player by lowGuid if not found
+                    if (!target)
+                    {
+                        ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(lowGuid);
+                        Player* playerTarget = ObjectAccessor::FindConnectedPlayer(guid);
+                        if (playerTarget) target = playerTarget;
+                    }
+                }
+                else
+                {
+                    target = bot; // Use bot itself as the target if no guid provided
+                }
+                return BotBuddyAI::CastSpell(bot, spellId, target);
             }
             break;
         case BotControlCommandType::Say:
@@ -299,57 +324,184 @@ bool ParseBotControlCommand(Player* bot, const std::string& commandStr)
         float x, y, z;
         iss >> x >> y >> z;
         BotControlCommand command = {BotControlCommandType::MoveTo, {std::to_string(x), std::to_string(y), std::to_string(z)}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "attack")
     {
         std::string guid;
         iss >> guid;
         BotControlCommand command = {BotControlCommandType::Attack, {guid}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "interact")
     {
         std::string guid;
         iss >> guid;
         BotControlCommand command = {BotControlCommandType::Interact, {guid}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "say")
     {
         std::string msg;
         std::getline(iss, msg);
         BotControlCommand command = {BotControlCommandType::Say, {msg}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "loot")
     {
         BotControlCommand command = {BotControlCommandType::Loot, {}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "follow")
     {
         BotControlCommand command = {BotControlCommandType::Follow, {}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "stop")
     {
         BotControlCommand command = {BotControlCommandType::Stop, {}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "acceptquest")
     {
         uint32 questId;
         iss >> questId;
         BotControlCommand command = {BotControlCommandType::AcceptQuest, {std::to_string(questId)}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     else if (cmd == "turninquest")
     {
         uint32 questId;
         iss >> questId;
         BotControlCommand command = {BotControlCommandType::TurnInQuest, {std::to_string(questId)}};
-        return HandleBotControlCommand(bot, command);
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
+    }
+    else if (cmd == "spell")
+    {
+        uint32 spellId;
+        iss >> spellId;
+        std::string targetGuid;
+        iss >> targetGuid;
+        BotControlCommand command;
+        if (!targetGuid.empty())
+        {
+            command = {BotControlCommandType::CastSpell, {std::to_string(spellId), targetGuid}};
+        }
+        else
+        {
+            command = {BotControlCommandType::CastSpell, {std::to_string(spellId)}};
+        }
+        bool result = HandleBotControlCommand(bot, command);
+        if (result)
+        {
+            AddBotCommandHistory(bot, FormatCommandString(command));
+        }
+        return result;
     }
     return false;
 }
+
+std::string FormatCommandString(const BotControlCommand& command)
+{
+    std::ostringstream ss;
+    switch (command.type)
+    {
+        case BotControlCommandType::MoveTo:
+            ss << "move to";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::Attack:
+            ss << "attack";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::Interact:
+            ss << "interact";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::CastSpell:
+            ss << "cast";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::Loot:
+            ss << "loot";
+            break;
+        case BotControlCommandType::Follow:
+            ss << "follow";
+            break;
+        case BotControlCommandType::Say:
+            ss << "say";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::AcceptQuest:
+            ss << "acceptquest";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::TurnInQuest:
+            ss << "turninquest";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+        case BotControlCommandType::Stop:
+            ss << "stop";
+            break;
+        default:
+            ss << "unknown command";
+            for (const auto& arg : command.args)
+                ss << " " << arg;
+            break;
+    }
+    return ss.str();
+}
+
+
