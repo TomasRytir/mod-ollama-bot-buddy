@@ -17,23 +17,63 @@
 - **Full LLM-Driven Bot Control:**  
   Playerbots are controlled by external LLM-generated commands using a robust API. Bots can be guided to level up, complete quests, explore, grind, improve professions, and raid, all according to high-level AI goals.
 
-- **Ollama LLM Integration:**  
-  The module communicates with a locally (or remotely) hosted Ollama API, sending detailed state prompts and executing single-step commands returned by the model.
+- **Chat-Driven Bot Control:**  
+  Bots respond in real-time to player chat messages that mention the bot's name. Chat commands like "come here," "go to <NPC/object>," "interact with <NPC/object>," or "attack <target>" will immediately override all other bot logic and are prioritized above any background task or AI reasoning.
 
-- **Game State Summarization:**  
-  Prompts for the LLM include comprehensive bot status (level, class, quests, location) and details on nearby objects, available quests, and inventory to allow intelligent planning.
+- **Comprehensive Command Set:**  
+  Supports direct control via these commands (from chat, LLM, or API):  
+  - `move to <x> <y> <z>`  
+  - `attack <guid>`  
+  - `spell <spellid> [guid]`  
+  - `interact <guid>`  
+  - `loot`  
+  - `follow`  
+  - `stop`  
+  - `say <message>`  
+  - `acceptquest <questId>`  
+  - `turninquest <questId>`
 
-- **Command API for Playerbots:**  
-  Supports movement, interaction, attacking, looting, quest handling, and more. Easily extensible for additional actions.
+- **PlayerbotAI Integration:**  
+  Full interoperability with PlayerbotAI for bot movement, combat, questing, looting, and interaction with creatures and game objects.
 
-- **Goal-Driven Autonomous Behavior:**  
-  Bots focus on long-term objectives such as reaching max level and acquiring best-in-slot gear, making decisions at each step to further these goals.
+- **Combat and Threat Handling:**  
+  - Automatically defends self or party members when attacked.
+  - Prioritizes survival and support actions if enemy level or threat is high.
+  - Tracks attackers and provides context-aware responses (attack, escape, or support).
 
-- **Easy Targeting:**  
-  By default, only bots with specific names (e.g., "OllamaTest") are LLM-controlled, for safe incremental rollout.
+- **Quest Automation:**  
+  - Accepts and turns in quests by quest ID.
+  - Tracks active quest states.
+  - Will interact with quest givers and objects as directed by LLM or player chat.
 
-- **Threaded LLM Calls:**  
-  LLM queries are run in separate threads to avoid server lag or blocking.
+- **Spell Casting:**  
+  - Casts spells by ID, targeting self or specific GUIDs if provided.
+  - Gathers and summarizes available spells for LLM context.
+
+- **Contextual Awareness and State Summaries:**  
+  - Maintains and exposes current group status, nearby players (with details), current combat state, available spells, nearby visible creatures/objects, and navigation waypoints.
+  - Tracks and reports last five executed commands for debugging and context.
+
+- **Smart Navigation:**  
+  - Lists all visible objects, game objects, and navigation waypoints within line of sight and range.
+  - Selects valid GUIDs or coordinates from in-game data, never invents IDs.
+
+- **Profession Detection:**  
+  - Tags visible chests and game objects with profession requirements (Herbalism, Mining, Alchemy Lab, etc.) for more intelligent navigation and interaction.
+
+- **Debug Logging and LLM Prompt Transparency:**  
+  - Full prompt and response logging in debug mode, including real-time state snapshot for the bot.
+
+- **API & Configurable LLM Model:**  
+  - Can be configured to use a specific LLM endpoint, model, and debug state via config.
+
+- **Thread-Safe Messaging and Command History:**  
+  - Thread-safe storage of recent player messages and bot command history for consistent operation in a concurrent environment.
+
+- **Strict Command Formatting Enforcement:**  
+  - All bot actions triggered by the LLM must be a single valid command (never summaries, never multiple actions, no extra commentary).
+
+---
 
 ## Installation
 
@@ -83,7 +123,7 @@ Other options may be added as the project evolves.
 ## How It Works
 
 1. **Bot Selection:**  
-   Only bots with a configured name (e.g., "OllamaTest") will be LLM-controlled. Change the name in the source to target other bots.
+   Only bots with a configured name (e.g., "Ollamatest") will be LLM-controlled. Change the name in the source to target other bots.
 
 2. **State Prompt Generation:**  
    Every few seconds, the module summarizes the bot's current state, inventory, quests, and surroundings and sends this to the LLM.
