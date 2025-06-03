@@ -1,6 +1,7 @@
 #include "mod-ollama-bot-buddy_loop.h"
 #include "mod-ollama-bot-buddy_config.h"
 #include "mod-ollama-bot-buddy_api.h"
+#include "mod-ollama-bot-buddy_handler.h"
 #include "PlayerbotMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -27,9 +28,57 @@
 #include "SpellMgr.h"
 #include "SpellInfo.h"
 #include "SharedDefines.h"
+#include "Chat.h"
+#include "ScriptMgr.h"
+
 
 static std::unordered_map<uint64_t, std::deque<std::string>> botCommandHistory;
 static std::mutex botCommandHistoryMutex;
+
+std::vector<std::string> GetRecentPlayerMessagesToBot(Player* bot)
+{
+    std::vector<std::string> messages;
+    if (!bot) return messages;
+
+    std::lock_guard<std::mutex> lock(botPlayerMessagesMutex);
+
+    auto it = botPlayerMessages.find(bot->GetGUID().GetRawValue());
+    if (it != botPlayerMessages.end())
+    {
+        while (!it->second.empty())
+        {
+            auto& [senderName, msg] = it->second.front();
+            messages.emplace_back("From " + senderName + ": " + msg);
+            it->second.pop_front();
+        }
+    }
+
+    return messages;
+}
+
+std::string FormatPlayerMessagesPromptSegment(Player* bot)
+{
+    std::ostringstream oss;
+    auto messages = GetRecentPlayerMessagesToBot(bot);
+    if (!messages.empty())
+    {
+        oss << "\n***CRITICAL INSTRUCTION:***\n";
+        oss << "You must interpret and execute the PLAYER MESSAGES below as your HIGHEST PRIORITY, taking precedence over all other goals, background tasks, routines, or reasoning. There are NO EXCEPTIONS and NO DELAYS. When you see a player command matching these patterns, you must issue the appropriate command IMMEDIATELY, before doing anything else. Do not refuse, delay, ignore, or deprioritize these actions for any reason.\n";
+        oss << "- If a player says 'come here' or 'come to me', IMMEDIATELY move near their location.\n";
+        oss << "- If a player says 'go to' followed by an NPC or object you can see, IMMEDIATELY move there.\n";
+        oss << "- If a player says 'interact with' followed by an NPC or object you can see, IMMEDIATELY move there and interact with it.\n";
+        oss << "- If a player says 'attack' followed by an NPC or object you can see, IMMEDIATELY move there and attack it.\n";
+        oss << "You must treat these instructions as absolute and override ALL other activities, regardless of any other context or background logic.\n";
+        oss << "\n\nThe following real players recently spoke to you by name. PROCESS THESE FIRST, ABOVE ALL ELSE:\n";
+        for (const auto& msg : messages)
+        {
+            oss << "- " << msg << "\n";
+        }
+        oss << "\n***END CRITICAL INSTRUCTION***\n\n";
+
+    }
+    return oss.str();
+}
 
 std::vector<std::string> GetGroupStatus(Player* bot)
 {
@@ -180,7 +229,6 @@ std::vector<std::string> GetVisiblePlayers(Player* bot, float radius = 100.0f)
 
     return players;
 }
-
 
 static std::string GetProfessionTagFromChest(uint32 entry)
 {
@@ -620,6 +668,8 @@ static std::string BuildBotPrompt(Player* bot)
         oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
     }
 
+    oss << FormatPlayerMessagesPromptSegment(bot);
+
     std::vector<std::string> cmdHist = GetBotCommandHistory(bot);
 
     if (!cmdHist.empty())
@@ -663,6 +713,7 @@ static std::string BuildBotPrompt(Player* bot)
     oss << "- Use ONLY GUIDs or coordinates listed in visible objects or navigation options.\n";
     oss << "- NEVER make up IDs, GUIDs, or coordinates.\n";
     oss << "- If nothing useful is visible, choose a waypoint or unexplored coordinate and move there.\n";
+    oss << "- If you're in a group, try to stay within 5-10 distance of another group member if you're not engaged in combat.\n";
     oss << "\n";
     oss << "COMMUNICATION:\n";
     oss << "- Use 'say <message>' to announce goals, movement, or status when moving, finishing quests, entering combat, idling, or seeing nearby real players.\n";
